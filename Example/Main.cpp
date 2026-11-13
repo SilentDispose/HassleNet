@@ -1,22 +1,20 @@
 #include "HassleNet/HassleNet.h"
 
-#include <string>
-#include <thread>
+#include <cstdio>
 #include <windows.h>
 
 static void AttachConsole() {
-    if (!AllocConsole()) {
-        return;
-    }
-    FILE* file;
+    AllocConsole();
+    FILE* file = nullptr;
     freopen_s(&file, "CONOUT$", "w", stdout);
 }
 
-static void MainThread() {
+static void Initialize() {
     AttachConsole();
 
-    while (!HassleNet::Initialize())
-        std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    if (!HassleNet::Initialize()) {
+        return;
+    }
 
     HassleNet::OnReceiveRpc([](int& id, SLikeNet::BitStream* bs) {
         printf("[OnReceiveRpc] id: %d | bs: %p\n", id, bs);
@@ -58,15 +56,17 @@ static void MainThread() {
     });
 }
 
-BOOL APIENTRY DllMain(HMODULE handle, DWORD reason, LPVOID) {
+BOOL APIENTRY DllMain(HMODULE handle, DWORD reason, LPVOID reserved) {
     switch (reason) {
         case DLL_PROCESS_ATTACH: {
             DisableThreadLibraryCalls(handle);
-            std::thread(MainThread).detach();
+            Initialize();
             break;
         }
         case DLL_PROCESS_DETACH: {
-            HassleNet::Destroy();
+            if (!reserved) {
+                HassleNet::Destroy();
+            }
             break;
         }
     }

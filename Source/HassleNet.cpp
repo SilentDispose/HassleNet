@@ -24,6 +24,7 @@ namespace HassleNet {
         };
 
         std::mutex configMutex;
+        std::mutex lifecycleMutex;
         std::shared_ptr<const Config> config = std::make_shared<Config>();
         std::atomic<bool> initialized = false;
 
@@ -169,18 +170,23 @@ namespace HassleNet {
     }
 
     bool Initialize() {
-        if (initialized.load())
+        if (initialized.load(std::memory_order_acquire))
+            return true;
+
+        std::lock_guard lock(lifecycleMutex);
+        if (initialized.load(std::memory_order_relaxed))
             return true;
 
         if (!Detail::InstallHooks())
             return false;
 
-        initialized.store(true);
+        initialized.store(true, std::memory_order_release);
         return true;
     }
 
     void Destroy() {
-        if (!initialized.exchange(false))
+        std::lock_guard lock(lifecycleMutex);
+        if (!initialized.exchange(false, std::memory_order_acq_rel))
             return;
 
         Detail::RemoveHooks();
@@ -188,7 +194,7 @@ namespace HassleNet {
     }
 
     bool IsInitialized() {
-        return initialized.load();
+        return initialized.load(std::memory_order_acquire);
     }
 
     void OnReceiveRpc(ReceiveRpcHandler handler) {
