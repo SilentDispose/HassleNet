@@ -5,6 +5,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
+#include <string>
 
 namespace SLikeNet {
 #define BITS_TO_BYTES(x) (((x) + 7) >> 3)
@@ -115,6 +116,67 @@ namespace SLikeNet {
                 return false;
             FromNetworkOrder(buf, inOutTemplateVar);
             return true;
+        }
+
+        template <class T> void WriteLE(T inTemplateVar) {
+            unsigned char buf[sizeof(T)];
+            for (unsigned i = 0; i < sizeof(T); ++i)
+                buf[i] = (unsigned char)((uint64_t)inTemplateVar >> (8 * i));
+            WriteBits(buf, (BitSize_t)(sizeof(T) << 3), true);
+        }
+
+        template <class T> bool ReadLE(T& inOutTemplateVar) {
+            unsigned char buf[sizeof(T)];
+            if (!ReadBits(buf, (BitSize_t)(sizeof(T) << 3), true))
+                return false;
+            uint64_t v = 0;
+            for (unsigned i = 0; i < sizeof(T); ++i)
+                v |= (uint64_t)buf[i] << (8 * i);
+            inOutTemplateVar = (T)v;
+            return true;
+        }
+
+        void WriteStringLE(const char* str, unsigned int length) {
+            WriteLE<unsigned int>(length);
+            if (length)
+                WriteAlignedBytes((const unsigned char*)str, length);
+        }
+        bool ReadStringLE(std::string& out) {
+            unsigned int length = 0;
+            if (!ReadLE<unsigned int>(length))
+                return false;
+            if (length > GetNumberOfUnreadBits() / 8)
+                return false;
+            out.resize(length);
+            if (length && !ReadAlignedBytes((unsigned char*)(&out[0]), length)) {
+                out.clear();
+                return false;
+            }
+            return true;
+        }
+
+        template <class T> BitStream& operator>>(T& v) {
+            ReadLE<T>(v);
+            return *this;
+        }
+        template <class T> BitStream& operator<<(T v) {
+            WriteLE<T>(v);
+            return *this;
+        }
+        BitStream& operator>>(std::string& s) {
+            ReadStringLE(s);
+            return *this;
+        }
+        BitStream& operator<<(const std::string& s) {
+            WriteStringLE(s.data(), (unsigned int)s.size());
+            return *this;
+        }
+        BitStream& operator<<(const char* s) {
+            if (s)
+                WriteStringLE(s, (unsigned int)strlen(s));
+            else
+                WriteLE<unsigned int>(0u);
+            return *this;
         }
 
         void Write(bool value);
