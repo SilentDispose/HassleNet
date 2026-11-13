@@ -1,12 +1,21 @@
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+
 #include "HassleNet/Detail/Internal.h"
-#include "HassleNet/Detail/PatternScan.h"
 #include "HassleNet/SLikeNet/StringCompressor.h"
 
 #include <MinHook.h>
 #include <atomic>
+#include <cstdint>
+#include <cstdio>
 #include <cstring>
 #include <mutex>
 #include <vector>
+#include <windows.h>
 
 namespace HassleNet::Detail {
     Addresses addresses;
@@ -19,22 +28,14 @@ namespace HassleNet::Detail {
     RpcOnReceiveFn origRpcOnReceive = nullptr;
 
     namespace {
-        constexpr const char* kReceivePattern = "40 53 55 56 57 41 54 41 56 41 57 48 83 EC 20 48 "
-                                                "8B 01 48 8B D9 FF 50 78 84 C0 0F 84 ?? ?? ?? ??";
-        constexpr const char* kSendBitStreamPattern =
-            "48 89 5C 24 20 55 57 41 54 41 56 41 57 48 81 EC 90 00 00 00 48 8B 05 ?? ?? ?? ?? 48 "
-            "33 C4 48 89 84 24 ?? ?? ?? ??";
-        constexpr const char* kSendRawPattern =
-            "40 53 55 57 41 54 41 56 41 57 48 81 EC 98 00 00 00 48 8B 05 ?? ?? ?? ?? 48 33 C4 48 "
-            "89 84 24 ?? ?? ?? ??";
-        constexpr const char* kDeallocatePattern =
-            "48 85 D2 0F 84 ?? ?? ?? ?? 48 89 74 24 18 57 48 83 EC 20 80 7A 38 ?? 48 8B F2 48 8D "
-            "15 ?? ?? ?? ??";
-        constexpr const char* kRpcSignalPattern = "40 55 53 57 41 54 41 55 41 56 48 8D AC 24 ?? ?? "
-                                                  "?? ?? 48 81 EC 48 03 00 00 48 8B 05 ?? ?? ?? ??";
-        constexpr const char* kRpcOnReceivePattern =
-            "40 55 53 56 57 41 55 41 56 41 57 48 8D AC 24 ?? ?? ?? ?? 48 81 EC C0 05 00 00 48 8B "
-            "05 ?? ?? ?? ??";
+        constexpr std::uintptr_t kImageBase = 0x140000000ULL;
+
+        constexpr std::uintptr_t kReceiveAddress = 0x1457244C0ULL;
+        constexpr std::uintptr_t kSendBitStreamAddress = 0x145727800ULL;
+        constexpr std::uintptr_t kSendRawAddress = 0x145727620ULL;
+        constexpr std::uintptr_t kDeallocateAddress = 0x14571C8A0ULL;
+        constexpr std::uintptr_t kRpcSignalAddress = 0x145733340ULL;
+        constexpr std::uintptr_t kRpcOnReceiveAddress = 0x145730A50ULL;
 
         constexpr unsigned char kRpcPluginId = SLikeNet::ID_RPC_PLUGIN;
         constexpr unsigned char kRpc4Signal = 2;
@@ -50,9 +51,33 @@ namespace HassleNet::Detail {
         void* createdHooks[8] = {};
         int createdHookCount = 0;
 
-        void* Resolve(const char* name, const char* pattern) {
-            (void)name;
-            return FindPattern(pattern);
+        bool GetModuleRegion(std::uint8_t*& base, std::size_t& size) {
+            base = reinterpret_cast<std::uint8_t*>(GetModuleHandleW(nullptr));
+            size = 0;
+            if (!base)
+                return false;
+
+            auto* dos = reinterpret_cast<IMAGE_DOS_HEADER*>(base);
+            if (dos->e_magic != IMAGE_DOS_SIGNATURE)
+                return false;
+
+            auto* nt = reinterpret_cast<IMAGE_NT_HEADERS*>(base + dos->e_lfanew);
+            if (nt->Signature != IMAGE_NT_SIGNATURE)
+                return false;
+
+            size = nt->OptionalHeader.SizeOfImage;
+            return size > 0;
+        }
+
+        void* Resolve(std::uint8_t* base, std::size_t imageSize, std::uintptr_t address) {
+            if (!base || imageSize == 0)
+                return nullptr;
+
+            const std::uintptr_t rva = address >= kImageBase ? (address - kImageBase) : address;
+            if (rva == 0 || rva >= imageSize)
+                return nullptr;
+
+            return base + rva;
         }
 
         SLikeNet::Packet* DetourReceive(void* peer) {
@@ -64,7 +89,8 @@ namespace HassleNet::Detail {
                 CaptureSender(packet->systemAddress, packet->guid);
                 if (DispatchReceivePacket(packet))
                     return packet;
-                origDeallocatePacket(peer, packet);
+                if (origDeallocatePacket)
+                    origDeallocatePacket(peer, packet);
             }
             return origReceive(peer);
         }
@@ -78,6 +104,15 @@ namespace HassleNet::Detail {
                                      bool broadcast,
                                      uint32_t forceReceiptNumber) {
             CapturePeer(peer);
+            if (!bitStream || bitStream->GetNumberOfBytesUsed() == 0)
+                return origSendBitStream(peer,
+                                         bitStream,
+                                         priority,
+                                         reliability,
+                                         orderingChannel,
+                                         systemIdentifier,
+                                         broadcast,
+                                         forceReceiptNumber);
             SLikeNet::PacketPriority mutablePriority = priority;
             SLikeNet::PacketReliability mutableReliability = reliability;
             char mutableChannel = orderingChannel;
@@ -116,19 +151,29 @@ namespace HassleNet::Detail {
                                    systemIdentifier,
                                    broadcast,
                                    forceReceiptNumber);
-            SLikeNet::BitStream view(
-                reinterpret_cast<const unsigned char*>(data), (unsigned int)length, true);
+            SLikeNet::BitStream view(reinterpret_cast<const unsigned char*>(data),
+                                     static_cast<unsigned int>(length),
+                                     true);
             SLikeNet::PacketPriority mutablePriority = priority;
             SLikeNet::PacketReliability mutableReliability = reliability;
             char mutableChannel = orderingChannel;
             if (!DispatchSendPacket(&view, mutablePriority, mutableReliability, mutableChannel))
                 return 0;
+
+            const bool payloadChanged =
+                view.GetNumberOfBytesUsed() != static_cast<SLikeNet::BitSize_t>(length) ||
+                memcmp(view.GetData(), data, static_cast<std::size_t>(length)) != 0;
+            const char* sendData =
+                payloadChanged ? reinterpret_cast<const char*>(view.GetData()) : data;
+            const int sendLength =
+                payloadChanged ? static_cast<int>(view.GetNumberOfBytesUsed()) : length;
+
             return origSendRaw(peer,
-                               data,
-                               length,
-                               priority,
-                               reliability,
-                               orderingChannel,
+                               sendData,
+                               sendLength,
+                               mutablePriority,
+                               mutableReliability,
+                               mutableChannel,
                                systemIdentifier,
                                broadcast,
                                forceReceiptNumber);
@@ -144,7 +189,8 @@ namespace HassleNet::Detail {
                              bool broadcast,
                              bool invokeLocal) {
             CaptureRpc4(rpc);
-            CapturePeer(*reinterpret_cast<void**>(reinterpret_cast<std::uint8_t*>(rpc) + 8));
+            if (rpc)
+                CapturePeer(*reinterpret_cast<void**>(reinterpret_cast<std::uint8_t*>(rpc) + 8));
 
             if (!sharedIdentifier || !origRpcSignal)
                 return;
@@ -179,7 +225,8 @@ namespace HassleNet::Detail {
 
         char DetourRpcOnReceive(void* rpc, SLikeNet::Packet* packet) {
             CaptureRpc4(rpc);
-            CapturePeer(*reinterpret_cast<void**>(reinterpret_cast<std::uint8_t*>(rpc) + 8));
+            if (rpc)
+                CapturePeer(*reinterpret_cast<void**>(reinterpret_cast<std::uint8_t*>(rpc) + 8));
 
             if (!packet || !packet->data || packet->length < 3 || packet->data[0] != kRpcPluginId ||
                 packet->data[1] != kRpc4Signal)
@@ -224,14 +271,14 @@ namespace HassleNet::Detail {
                 return origRpcOnReceive(rpc, packet);
 
             SLikeNet::BitStream out;
-            out.Write((unsigned char)kRpcPluginId);
-            out.Write((unsigned char)kRpc4Signal);
+            out.Write(static_cast<unsigned char>(kRpcPluginId));
+            out.Write(static_cast<unsigned char>(kRpc4Signal));
             char newName[16];
             snprintf(newName, sizeof(newName), "%d", mutableId);
             SLikeNet::StringCompressor::Instance()->EncodeString(newName, 0, &out, 0);
             out.AlignWriteToByteBoundary();
             if (payload.GetNumberOfBitsUsed() > 0)
-                out.Write(&payload, payload.GetNumberOfBitsUsed());
+                out.WriteBits(payload.GetData(), payload.GetNumberOfBitsUsed(), false);
 
             SLikeNet::Packet rebuilt = *packet;
             rebuilt.data = out.GetData();
@@ -275,26 +322,34 @@ namespace HassleNet::Detail {
 
     bool EmulateRpcPacket(SLikeNet::Packet* packet) {
         void* rpc = rpc4.load(std::memory_order_acquire);
-        if (!rpc || !origRpcOnReceive || !packet)
+        auto entry = reinterpret_cast<RpcOnReceiveFn>(addresses.rpcOnReceive);
+        if (!rpc || !entry || !origRpcOnReceive || !packet)
             return false;
 
         lastRpcBlocked = false;
-        DetourRpcOnReceive(rpc, packet);
-        return !lastRpcBlocked;
+        const char result = entry(rpc, packet);
+        return result != kRrStopProcessingAndDeallocate && !lastRpcBlocked;
     }
 
     bool InstallHooks() {
-        addresses.receive = Resolve("RakPeer::Receive", kReceivePattern);
-        addresses.sendBitStream = Resolve("RakPeer::Send(BitStream*)", kSendBitStreamPattern);
-        addresses.sendRaw = Resolve("RakPeer::Send(char*,int)", kSendRawPattern);
-        addresses.deallocatePacket = Resolve("RakPeer::DeallocatePacket", kDeallocatePattern);
-        addresses.rpcSignal = Resolve("RPC4::Signal", kRpcSignalPattern);
-        addresses.rpcOnReceive = Resolve("RPC4::OnReceive", kRpcOnReceivePattern);
+        std::uint8_t* base = nullptr;
+        std::size_t imageSize = 0;
+        if (!GetModuleRegion(base, imageSize))
+            return false;
+
+        addresses.receive = Resolve(base, imageSize, kReceiveAddress);
+        addresses.sendBitStream = Resolve(base, imageSize, kSendBitStreamAddress);
+        addresses.sendRaw = Resolve(base, imageSize, kSendRawAddress);
+        addresses.deallocatePacket = Resolve(base, imageSize, kDeallocateAddress);
+        addresses.rpcSignal = Resolve(base, imageSize, kRpcSignalAddress);
+        addresses.rpcOnReceive = Resolve(base, imageSize, kRpcOnReceiveAddress);
 
         if (!addresses.receive || !addresses.sendBitStream || !addresses.sendRaw ||
             !addresses.deallocatePacket || !addresses.rpcSignal || !addresses.rpcOnReceive) {
             return false;
         }
+
+        origDeallocatePacket = reinterpret_cast<DeallocateFn>(addresses.deallocatePacket);
 
         if (MH_Initialize() != MH_OK)
             return false;
@@ -303,19 +358,12 @@ namespace HassleNet::Detail {
             void* target;
             void* detour;
             void** original;
-            const char* name;
         } hooks[] = {
-            {addresses.receive, (void*)&DetourReceive, (void**)&origReceive, "Receive"},
-            {addresses.sendBitStream,
-             (void*)&DetourSendBitStream,
-             (void**)&origSendBitStream,
-             "Send(BitStream)"},
-            {addresses.sendRaw, (void*)&DetourSendRaw, (void**)&origSendRaw, "Send(char*)"},
-            {addresses.rpcSignal, (void*)&DetourRpcSignal, (void**)&origRpcSignal, "RPC4::Signal"},
-            {addresses.rpcOnReceive,
-             (void*)&DetourRpcOnReceive,
-             (void**)&origRpcOnReceive,
-             "RPC4::OnReceive"},
+            {addresses.receive, (void*)&DetourReceive, (void**)&origReceive},
+            {addresses.sendBitStream, (void*)&DetourSendBitStream, (void**)&origSendBitStream},
+            {addresses.sendRaw, (void*)&DetourSendRaw, (void**)&origSendRaw},
+            {addresses.rpcSignal, (void*)&DetourRpcSignal, (void**)&origRpcSignal},
+            {addresses.rpcOnReceive, (void*)&DetourRpcOnReceive, (void**)&origRpcOnReceive},
         };
 
         for (const HookDesc& hook : hooks) {
@@ -324,6 +372,7 @@ namespace HassleNet::Detail {
                 RemoveHooks();
                 return false;
             }
+            createdHooks[createdHookCount++] = hook.target;
         }
 
         if (MH_EnableHook(MH_ALL_HOOKS) != MH_OK) {

@@ -16,7 +16,6 @@ add_library(${PROJECT_NAME} STATIC
     Source/DS_HuffmanEncodingTree.cpp
     Source/HassleNet.cpp
     Source/Hooks.cpp
-    Source/PatternScan.cpp
     Source/SLikeNetTypes.cpp
     Source/StringCompressor.cpp
 )

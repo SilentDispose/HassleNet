@@ -15,9 +15,8 @@ static void AttachConsole() {
 static void MainThread() {
     AttachConsole();
 
-    while (!HassleNet::Initialize()) {
+    while (!HassleNet::Initialize())
         std::this_thread::sleep_for(std::chrono::milliseconds(100));
-    }
 
     HassleNet::OnReceiveRpc([](int& id, SLikeNet::BitStream* bs) {
         printf("[OnReceiveRpc] id: %d | bs: %p\n", id, bs);
@@ -39,7 +38,7 @@ static void MainThread() {
     });
     HassleNet::OnReceivePacket([](SLikeNet::Packet* packet) {
         SLikeNet::BitStream bs(packet->data, packet->length);
-        uint8_t id;
+        uint8_t id = 0;
         bs.Read(id);
         printf("[OnReceivePacket] id: %d | packet: %p\n", id, packet);
         return true;
@@ -48,13 +47,13 @@ static void MainThread() {
                                SLikeNet::PacketPriority& priority,
                                SLikeNet::PacketReliability& reliability,
                                char& orderingChannel) {
-        printf(
-            "[OnSendRpc] id: %d | bs: %p | priority: %d | reliability: %d | orderingChannel: %d\n",
-            bs->GetData()[0],
-            bs,
-            priority,
-            reliability,
-            orderingChannel);
+        printf("[OnSendPacket] id: %d | bs: %p | priority: %d | reliability: %d | "
+               "orderingChannel: %d\n",
+               bs->GetData()[0],
+               bs,
+               priority,
+               reliability,
+               orderingChannel);
         return true;
     });
 }

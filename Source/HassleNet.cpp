@@ -6,6 +6,7 @@
 #include <atomic>
 #include <cstdio>
 #include <cstdlib>
+#include <cstring>
 #include <memory>
 #include <mutex>
 #include <unordered_set>
@@ -41,6 +42,20 @@ namespace HassleNet {
             std::lock_guard lock(configMutex);
             return config;
         }
+
+        void RestoreReadOffset(SLikeNet::BitStream* bs, SLikeNet::BitSize_t offset) {
+            if (!bs)
+                return;
+            const SLikeNet::BitSize_t used = bs->GetNumberOfBitsUsed();
+            bs->SetReadOffset(offset <= used ? offset : used);
+        }
+
+        void RewindForHandler(SLikeNet::BitStream* bs, SLikeNet::BitSize_t offset) {
+            if (!bs)
+                return;
+            const SLikeNet::BitSize_t used = bs->GetNumberOfBitsUsed();
+            bs->SetReadOffset(offset <= used ? offset : 0);
+        }
     }
 
     namespace Detail {
@@ -51,22 +66,22 @@ namespace HassleNet {
             const long value = strtol(name, &end, 10);
             if (end == name || *end != 0)
                 return -1;
-            return (int)value;
+            return static_cast<int>(value);
         }
 
         bool DispatchReceivePacket(SLikeNet::Packet* packet) {
             if (!packet || !packet->data || packet->length == 0)
                 return true;
 
-            const auto config = SnapshotConfig();
+            const auto cfg = SnapshotConfig();
 
-            if (config->blockedPacketIds.count(packet->data[0]))
+            if (cfg->blockedPacketIds.count(packet->data[0]))
                 return false;
 
-            if (config->receivePacket.empty())
+            if (cfg->receivePacket.empty())
                 return true;
 
-            for (const ReceivePacketHandler& handler : config->receivePacket) {
+            for (const ReceivePacketHandler& handler : cfg->receivePacket) {
                 if (!handler(packet))
                     return false;
             }
@@ -77,40 +92,49 @@ namespace HassleNet {
                                 SLikeNet::PacketPriority& priority,
                                 SLikeNet::PacketReliability& reliability,
                                 char& orderingChannel) {
-            const auto config = SnapshotConfig();
+            const auto cfg = SnapshotConfig();
 
             if (bitStream && bitStream->GetNumberOfBytesUsed() > 0 &&
-                config->blockedPacketIds.count(bitStream->GetData()[0]))
+                cfg->blockedPacketIds.count(bitStream->GetData()[0]))
                 return false;
 
-            if (config->sendPacket.empty())
+            if (cfg->sendPacket.empty())
                 return true;
 
             const SLikeNet::BitSize_t readOffset = bitStream ? bitStream->GetReadOffset() : 0;
-            for (const SendPacketHandler& handler : config->sendPacket) {
-                if (bitStream)
-                    bitStream->SetReadOffset(readOffset);
+            for (const SendPacketHandler& handler : cfg->sendPacket) {
+                RewindForHandler(bitStream, readOffset);
                 if (!handler(bitStream, priority, reliability, orderingChannel)) {
-                    if (bitStream)
-                        bitStream->SetReadOffset(readOffset);
+                    RestoreReadOffset(bitStream, readOffset);
                     return false;
                 }
             }
-            if (bitStream)
-                bitStream->SetReadOffset(readOffset);
+            RestoreReadOffset(bitStream, readOffset);
             return true;
         }
 
         bool DispatchReceiveRpc(int& id, SLikeNet::BitStream* payload) {
-            const auto config = SnapshotConfig();
+            const auto cfg = SnapshotConfig();
 
-            if (config->blockedRpc.count(id))
+            if (cfg->blockedRpc.count(id))
                 return false;
 
-            for (const ReceiveRpcHandler& handler : config->receiveRpc) {
-                if (!handler(id, payload))
+            if (cfg->receiveRpc.empty())
+                return true;
+
+            const SLikeNet::BitSize_t readOffset = payload ? payload->GetReadOffset() : 0;
+            for (const ReceiveRpcHandler& handler : cfg->receiveRpc) {
+                RewindForHandler(payload, readOffset);
+                if (!handler(id, payload)) {
+                    RestoreReadOffset(payload, readOffset);
                     return false;
+                }
+                if (cfg->blockedRpc.count(id)) {
+                    RestoreReadOffset(payload, readOffset);
+                    return false;
+                }
             }
+            RestoreReadOffset(payload, readOffset);
             return true;
         }
 
@@ -119,15 +143,27 @@ namespace HassleNet {
                              SLikeNet::PacketPriority& priority,
                              SLikeNet::PacketReliability& reliability,
                              char& orderingChannel) {
-            const auto config = SnapshotConfig();
+            const auto cfg = SnapshotConfig();
 
-            if (config->blockedRpc.count(id))
+            if (cfg->blockedRpc.count(id))
                 return false;
 
-            for (const SendRpcHandler& handler : config->sendRpc) {
-                if (!handler(id, payload, priority, reliability, orderingChannel))
+            if (cfg->sendRpc.empty())
+                return true;
+
+            const SLikeNet::BitSize_t readOffset = payload ? payload->GetReadOffset() : 0;
+            for (const SendRpcHandler& handler : cfg->sendRpc) {
+                RewindForHandler(payload, readOffset);
+                if (!handler(id, payload, priority, reliability, orderingChannel)) {
+                    RestoreReadOffset(payload, readOffset);
                     return false;
+                }
+                if (cfg->blockedRpc.count(id)) {
+                    RestoreReadOffset(payload, readOffset);
+                    return false;
+                }
             }
+            RestoreReadOffset(payload, readOffset);
             return true;
         }
     }
@@ -286,14 +322,14 @@ namespace HassleNet {
             return false;
 
         SLikeNet::BitStream out;
-        out.Write((unsigned char)SLikeNet::ID_RPC_PLUGIN);
-        out.Write((unsigned char)2);  // ID_RPC4_SIGNAL
+        out.Write(static_cast<unsigned char>(SLikeNet::ID_RPC_PLUGIN));
+        out.Write(static_cast<unsigned char>(2));
         char name[16];
         snprintf(name, sizeof(name), "%d", id);
         SLikeNet::StringCompressor::Instance()->EncodeString(name, 0, &out, 0);
         out.AlignWriteToByteBoundary();
         if (payload.GetNumberOfBitsUsed() > 0)
-            out.Write(&payload, payload.GetNumberOfBitsUsed());
+            out.WriteBits(payload.GetData(), payload.GetNumberOfBitsUsed(), false);
 
         SLikeNet::Packet packet{};
         Detail::GetLastSender(packet.systemAddress, packet.guid);

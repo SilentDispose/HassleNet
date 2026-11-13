@@ -32,7 +32,7 @@ namespace HassleNet {
 
     void BlockRpc(int id, bool block = true);
     void BlockPacketId(unsigned char id, bool block = true);
-    bool IsRPCBlocked(int id);
+    bool IsRpcBlocked(int id);
     bool IsPacketIdBlocked(unsigned char id);
 
     bool IsReady();
