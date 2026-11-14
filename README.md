@@ -142,19 +142,4 @@ HassleNet is MIT-licensed, see [LICENSE](LICENSE).
 
 Ported SLikeNet/`RakNet` code remains under its original licenses
 (BSD-style, Copyright (c) 2014 Oculus VR; MIT-style modifications,
-Copyright (c) 2017–2019 SLikeSoft UG). Vendored kthook and its dependencies retain their respective licenses in `third_party/kthook`.
-
-
-## Lifecycle and validation
-
-Call `HassleNet::Initialize()` and `HassleNet::Destroy()` outside `DllMain` and outside hook callbacks. Initialization suspends other threads while installing the hooks. Before `Destroy()` or DLL unloading, the host must ensure that no thread can enter a hook and that no callback / trampoline is in flight. `Destroy()` does not wait for active callbacks; it is not a safe general-purpose live-unload mechanism. Do not run it under the Windows loader lock.
-
-This fork has been cross-compiled for Windows x64 using MinGW, and its kthook relay was smoke-tested under Wine, including a controlled concurrent-call test. It has not been tested with MSVC or in Hassle Online. Game updates can invalidate the hard-coded addresses.
-
-Optional focused tests:
-
-```bat
-cmake -S . -B build -A x64 -DHASSLENET_BUILD_TESTS=ON
-cmake --build build --config Release
-ctest --test-dir build -C Release --output-on-failure
-```
+Copyright (c) 2017–2019 SLikeSoft UG). Vendored kthook and its dependencies retain their respective licenses in `kthook`.
