@@ -15,8 +15,7 @@ Everything is resolved at startup from byte patterns — no hardcoded absolute a
 | Networking | SLikeNet **0.1.3** (RakNet 4.082-compatible, protocol version 6), statically linked into the exe |
 | Original | `Plugins/RakNet/Source/RakNet/Private/SLikeNet/...` |
 
-`HassleNet::Initialize()` returns `true` only when all hook signatures were found
-uniquely, so it doubles as a build compatibility check.
+`HassleNet::Initialize()` resolves the build-specific RVAs and attempts to install all hooks. A `true` result does not verify instruction signatures or guarantee compatibility with an updated game.
 
 ## Features
 
@@ -29,12 +28,12 @@ uniquely, so it doubles as a build compatibility check.
 - ABI-exact `SLikeNet::BitStream`, protocol types and `StringCompressor`
   (byte-identical wire format, verified against upstream SLikeNet).
 - Full `RakPeerInterface` access through `GetPeer()`.
-- Static library: MinHook is linked in, the consumer only links `HassleNet.lib`.
+- Static library: hooks use the vendored kthook, without MinHook global initialization. Link through the CMake `HassleNet` target so its dependencies are propagated.
 
 ## Build
 
 Requirements: Windows x64, MSVC 2022 (or newer), CMake 3.20+.
-MinHook is fetched automatically by CMake.
+kthook and its dependencies are vendored in `third_party/kthook`; no network fetch is required. See `third_party/kthook/README-HassleNet.md` for the local Win64 relay fix.
 
 ```bat
 cmake -S . -B build -A x64
@@ -44,7 +43,7 @@ cmake --build build --config Release
 Outputs:
 
 - `build/Release/HassleNet.lib` — static library;
-- `build/Example/<config>/HassleNetExample.asi` — example plugin (ASI, inject into the game process).
+- `build/Example/<config>/HassleNetExample.asi` — example plugin. Its host/ASI loader must call the exported `InitializeASI` after loading; loading alone does not start the hooks.
 
 ## Layout
 
@@ -172,7 +171,7 @@ The executable carries no useful version resource (`UE5-CL-0`). Use the launcher
 
 The manifest also lists every shipped file with its MD5, including the executable.
 Alternatively compare the executable's own MD5/SHA-256, or rely on
-`HassleNet::Initialize()` returning `true` as the "supported build" check.
+The hook addresses are build-specific; validate the target build separately before use.
 
 ## License
 
@@ -180,4 +179,19 @@ HassleNet is MIT-licensed, see [LICENSE](LICENSE).
 
 Ported SLikeNet/`RakNet` code remains under its original licenses
 (BSD-style, Copyright (c) 2014 Oculus VR; MIT-style modifications,
-Copyright (c) 2017–2019 SLikeSoft UG). MinHook is BSD 2-Clause.
+Copyright (c) 2017–2019 SLikeSoft UG). Vendored kthook and its dependencies retain their respective licenses in `third_party/kthook`.
+
+
+## Lifecycle and validation
+
+Call `HassleNet::Initialize()` and `HassleNet::Destroy()` outside `DllMain` and outside hook callbacks. Initialization suspends other threads while installing the hooks. Before `Destroy()` or DLL unloading, the host must ensure that no thread can enter a hook and that no callback / trampoline is in flight. `Destroy()` does not wait for active callbacks; it is not a safe general-purpose live-unload mechanism. Do not run it under the Windows loader lock.
+
+This fork has been cross-compiled for Windows x64 using MinGW, and its kthook relay was smoke-tested under Wine, including a controlled concurrent-call test. It has not been tested with MSVC or in Hassle Online. Game updates can invalidate the hard-coded addresses.
+
+Optional focused tests:
+
+```bat
+cmake -S . -B build -A x64 -DHASSLENET_BUILD_TESTS=ON
+cmake --build build --config Release
+ctest --test-dir build -C Release --output-on-failure
+```

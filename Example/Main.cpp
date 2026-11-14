@@ -56,19 +56,16 @@ static void Initialize() {
     });
 }
 
-BOOL APIENTRY DllMain(HMODULE handle, DWORD reason, LPVOID reserved) {
-    switch (reason) {
-        case DLL_PROCESS_ATTACH: {
-            DisableThreadLibraryCalls(handle);
-            Initialize();
-            break;
-        }
-        case DLL_PROCESS_DETACH: {
-            if (!reserved) {
-                HassleNet::Destroy();
-            }
-            break;
-        }
-    }
+extern "C" __declspec(dllexport) void InitializeASI() {
+    Initialize();
+}
+
+extern "C" __declspec(dllexport) void ShutdownASI() {
+    HassleNet::Destroy();
+}
+
+BOOL APIENTRY DllMain(HMODULE handle, DWORD reason, LPVOID) {
+    if (reason == DLL_PROCESS_ATTACH)
+        DisableThreadLibraryCalls(handle);
     return TRUE;
 }

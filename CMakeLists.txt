@@ -1,15 +1,15 @@
 cmake_minimum_required(VERSION 3.20)
 project(HassleNet)
 
-set(HASSLENET_BUILD_EXAMPLE ON)
+option(HASSLENET_BUILD_EXAMPLE "Build the example plugin" OFF)
 
 include(FetchContent)
 FetchContent_Declare(
-    minhook
-    GIT_REPOSITORY https://github.com/TsudaKageyu/minhook.git
-    GIT_TAG v1.3.4
+    kthook
+    GIT_REPOSITORY https://github.com/SilentDispose/kthook.git
+    GIT_TAG 4331456543f408c42122ced22144cfb698031266
 )
-FetchContent_MakeAvailable(minhook)
+FetchContent_MakeAvailable(kthook)
 
 add_library(${PROJECT_NAME} STATIC
     Source/BitStream.cpp
@@ -21,7 +21,10 @@ add_library(${PROJECT_NAME} STATIC
 )
 
 target_include_directories(${PROJECT_NAME} PUBLIC Include)
-target_link_libraries(${PROJECT_NAME} PRIVATE minhook ws2_32)
+target_link_libraries(${PROJECT_NAME}
+    PUBLIC kthook
+    PRIVATE ws2_32
+)
 
 target_compile_features(${PROJECT_NAME} PUBLIC cxx_std_17)
 
