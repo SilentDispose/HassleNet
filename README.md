@@ -106,20 +106,6 @@ HassleNet::BlockRpc(42);
 HassleNet::BlockPacketId(SLikeNet::ID_CONNECTION_LOST);
 ```
 
-## Hooked functions (build 2.1.0.8)
-
-RVAs are relative to the image base `0x140000000`; at runtime each address is found by a
-unique 32-byte signature, not by these constants.
-
-| Function | RVA | Hooked for |
-|---|---|---|
-| `RakPeer::Receive` | `0x57244C0` | `OnReceivePacket`, peer capture, blocking (deallocate + next) |
-| `RakPeer::Send(BitStream*)` | `0x5727800` | `OnSendPacket` |
-| `RakPeer::Send(char*, int)` | `0x5727620` | `OnSendPacket` (raw) |
-| `RakPeer::DeallocatePacket` | `0x571C8A0` | dropping blocked packets |
-| `RPC4::Signal` | `0x5733340` | `OnSendRpc` |
-| `RPC4::OnReceive` | `0x5730A50` | `OnReceiveRpc` (+ id/payload rewrite) |
-
 ## Behaviour notes
 
 - **RPC ids are numeric.** The game's wrapper converts a `uint8` id to a decimal string
@@ -149,18 +135,6 @@ The vendored headers replicate the exact ABI of the shipping build:
 - compressed numbers are written big-endian, matching SLikeNet builds without
   `__BITSTREAM_NATIVE_END`;
 - `StringCompressor` output was diffed byte-for-byte against upstream SLikeNet.
-
-## Determining the game version
-
-The executable carries no useful version resource (`UE5-CL-0`). Use the launcher manifest:
-
-```
-<GameRoot>/manifest.json  ->  "build": "2.1.0.8"
-```
-
-The manifest also lists every shipped file with its MD5, including the executable.
-Alternatively compare the executable's own MD5/SHA-256, or rely on
-The hook addresses are build-specific; validate the target build separately before use.
 
 ## License
 
