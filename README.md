@@ -6,17 +6,6 @@ rakhook-style API for reading, blocking, sending and emulating network traffic.
 
 Everything is resolved at startup from byte patterns — no hardcoded absolute addresses.
 
-## Supported game build
-
-| | |
-|---|---|
-| Game | Hassle Online, build **2.1.0.8** |
-| Executable | `HassleOnline-Win64-Shipping.exe`, 182 231 472 bytes, MD5 `b81ade40650bbf68dac148670810bfbd` |
-| Networking | SLikeNet **0.1.3** (RakNet 4.082-compatible, protocol version 6), statically linked into the exe |
-| Original | `Plugins/RakNet/Source/RakNet/Private/SLikeNet/...` |
-
-`HassleNet::Initialize()` resolves the build-specific RVAs and attempts to install all hooks. A `true` result does not verify instruction signatures or guarantee compatibility with an updated game.
-
 ## Features
 
 - RPC4: `OnReceiveRpc` / `OnSendRpc` with a mutable `int& id` and payload `BitStream*`.
