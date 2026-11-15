@@ -57,6 +57,9 @@ namespace HassleNet::Detail {
     void CaptureSender(const SLikeNet::SystemAddress& address, const SLikeNet::RakNetGUID& guid);
     bool GetLastSender(SLikeNet::SystemAddress& address, SLikeNet::RakNetGUID& guid);
 
+    void CaptureSendTarget(const SLikeNet::AddressOrGUID& target);
+    SLikeNet::AddressOrGUID GetSendTarget();
+
     bool EmulateRpcPacket(SLikeNet::Packet* packet);
 
     void* PeerRaw();

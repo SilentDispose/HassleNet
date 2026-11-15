@@ -48,6 +48,8 @@ namespace HassleNet::Detail {
         std::mutex senderMutex;
         SLikeNet::SystemAddress lastSender = SLikeNet::UNASSIGNED_SYSTEM_ADDRESS();
         SLikeNet::RakNetGUID lastSenderGuid = SLikeNet::UNASSIGNED_RAKNET_GUID();
+        std::mutex sendTargetMutex;
+        SLikeNet::AddressOrGUID lastSendTarget = SLikeNet::AddressOrGUID(SLikeNet::UNASSIGNED_SYSTEM_ADDRESS());
         thread_local bool lastRpcBlocked = false;
         using ReceiveHook = kthook::kthook_simple<ReceiveFn, kthook::kFreezeThreads>;
         using SendBitStreamHook = kthook::kthook_simple<SendBitStreamFn, kthook::kFreezeThreads>;
@@ -115,6 +117,8 @@ namespace HassleNet::Detail {
                                      bool broadcast,
                                      uint32_t forceReceiptNumber) {
             CapturePeer(peer);
+            if (!broadcast && !systemIdentifier.IsUndefined())
+                CaptureSendTarget(systemIdentifier);
             if (!bitStream || bitStream->GetNumberOfBytesUsed() == 0)
                 return original(peer,
                                 bitStream,
@@ -153,6 +157,8 @@ namespace HassleNet::Detail {
                                bool broadcast,
                                uint32_t forceReceiptNumber) {
             CapturePeer(peer);
+            if (!broadcast && !systemIdentifier.IsUndefined())
+                CaptureSendTarget(systemIdentifier);
             if (!data || length <= 0)
                 return original(peer,
                                 data,
@@ -204,6 +210,8 @@ namespace HassleNet::Detail {
             CaptureRpc4(rpc);
             if (rpc)
                 CapturePeer(*reinterpret_cast<void**>(reinterpret_cast<std::uint8_t*>(rpc) + 8));
+            if (!broadcast && !systemIdentifier.IsUndefined())
+                CaptureSendTarget(systemIdentifier);
 
             if (!sharedIdentifier || !original)
                 return;
@@ -324,6 +332,16 @@ namespace HassleNet::Detail {
         std::lock_guard lock(senderMutex);
         lastSender = address;
         lastSenderGuid = guid;
+    }
+
+    void CaptureSendTarget(const SLikeNet::AddressOrGUID& target) {
+        std::lock_guard lock(sendTargetMutex);
+        lastSendTarget = target;
+    }
+
+    SLikeNet::AddressOrGUID GetSendTarget() {
+        std::lock_guard lock(sendTargetMutex);
+        return lastSendTarget;
     }
 
     bool GetLastSender(SLikeNet::SystemAddress& address, SLikeNet::RakNetGUID& guid) {

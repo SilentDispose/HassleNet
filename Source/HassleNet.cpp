@@ -36,7 +36,7 @@ namespace HassleNet {
         }
 
         SLikeNet::AddressOrGUID ServerTarget() {
-            return SLikeNet::AddressOrGUID(SLikeNet::UNASSIGNED_SYSTEM_ADDRESS());
+            return Detail::GetSendTarget();
         }
 
         std::shared_ptr<const Config> SnapshotConfig() {
@@ -283,13 +283,23 @@ namespace HassleNet {
                  char orderingChannel) {
         if (IsRpcBlocked(id))
             return false;
-        void* rpc4 = Detail::Rpc4Raw();
-        if (!rpc4 || !Detail::origRpcSignal)
+        void* peer = Detail::PeerRaw();
+        if (!peer || !Detail::origSendBitStream)
             return false;
+
+        SLikeNet::BitStream out;
+        out.Write(static_cast<unsigned char>(SLikeNet::ID_RPC_PLUGIN));
+        out.Write(static_cast<unsigned char>(2));
         char name[16];
         snprintf(name, sizeof(name), "%d", id);
-        Detail::origRpcSignal(
-            rpc4, name, bs, priority, reliability, orderingChannel, ServerTarget(), false, false);
+        SLikeNet::StringCompressor::Instance()->EncodeString(name, 0, &out, 0);
+        out.AlignWriteToByteBoundary();
+        if (bs && bs->GetNumberOfBitsUsed() > 0)
+            out.WriteBits(bs->GetData(), bs->GetNumberOfBitsUsed(), false);
+
+        SLikeNet::AddressOrGUID target = ServerTarget();
+        Detail::origSendBitStream(
+            peer, &out, priority, reliability, orderingChannel, target, target.IsUndefined(), 0);
         return true;
     }
 
@@ -297,10 +307,12 @@ namespace HassleNet {
                     SLikeNet::PacketPriority priority,
                     SLikeNet::PacketReliability reliability,
                     char orderingChannel) {
-        SLikeNet::RakPeerInterface* peer = GetPeer();
-        if (!peer || !bs)
+        void* peer = Detail::PeerRaw();
+        if (!peer || !bs || !Detail::origSendBitStream)
             return false;
-        peer->Send(bs, priority, reliability, orderingChannel, ServerTarget(), false);
+        SLikeNet::AddressOrGUID target = ServerTarget();
+        Detail::origSendBitStream(
+            peer, bs, priority, reliability, orderingChannel, target, target.IsUndefined(), 0);
         return true;
     }
 
@@ -309,16 +321,19 @@ namespace HassleNet {
                        SLikeNet::PacketPriority priority,
                        SLikeNet::PacketReliability reliability,
                        char orderingChannel) {
-        SLikeNet::RakPeerInterface* peer = GetPeer();
-        if (!peer || !data || length <= 0)
+        void* peer = Detail::PeerRaw();
+        if (!peer || !data || length <= 0 || !Detail::origSendRaw)
             return false;
-        peer->Send(reinterpret_cast<const char*>(data),
-                   length,
-                   priority,
-                   reliability,
-                   orderingChannel,
-                   ServerTarget(),
-                   false);
+        SLikeNet::AddressOrGUID target = ServerTarget();
+        Detail::origSendRaw(peer,
+                            reinterpret_cast<const char*>(data),
+                            length,
+                            priority,
+                            reliability,
+                            orderingChannel,
+                            target,
+                            target.IsUndefined(),
+                            0);
         return true;
     }
 
