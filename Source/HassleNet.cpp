@@ -297,10 +297,13 @@ namespace HassleNet {
                     SLikeNet::PacketPriority priority,
                     SLikeNet::PacketReliability reliability,
                     char orderingChannel) {
-        SLikeNet::RakPeerInterface* peer = GetPeer();
+        void* peer = Detail::PeerRaw();
         if (!peer || !bs)
             return false;
-        peer->Send(bs, priority, reliability, orderingChannel, ServerTarget(), false);
+        if (!Detail::origSendBitStream)
+            return false;
+        Detail::origSendBitStream(
+            peer, bs, priority, reliability, orderingChannel, ServerTarget(), false, 0);
         return true;
     }
 
@@ -309,16 +312,20 @@ namespace HassleNet {
                        SLikeNet::PacketPriority priority,
                        SLikeNet::PacketReliability reliability,
                        char orderingChannel) {
-        SLikeNet::RakPeerInterface* peer = GetPeer();
+        void* peer = Detail::PeerRaw();
         if (!peer || !data || length <= 0)
             return false;
-        peer->Send(reinterpret_cast<const char*>(data),
-                   length,
-                   priority,
-                   reliability,
-                   orderingChannel,
-                   ServerTarget(),
-                   false);
+        if (!Detail::origSendRaw)
+            return false;
+        Detail::origSendRaw(peer,
+                            static_cast<const char*>(data),
+                            length,
+                            priority,
+                            reliability,
+                            orderingChannel,
+                            ServerTarget(),
+                            false,
+                            0);
         return true;
     }
 
