@@ -49,6 +49,39 @@ namespace HassleNet::Detail {
         SLikeNet::SystemAddress lastSender = SLikeNet::UNASSIGNED_SYSTEM_ADDRESS();
         SLikeNet::RakNetGUID lastSenderGuid = SLikeNet::UNASSIGNED_RAKNET_GUID();
         thread_local bool lastRpcBlocked = false;
+
+        thread_local int sendHookDepth = 0;
+        thread_local int rpcHookDepth = 0;
+        thread_local bool isFlushing = false;
+
+        struct PendingRpc {
+            int id = 0;
+            std::vector<unsigned char> data;
+            SLikeNet::BitSize_t bits = 0;
+            SLikeNet::PacketPriority pri = SLikeNet::HIGH_PRIORITY;
+            SLikeNet::PacketReliability rel = SLikeNet::RELIABLE_ORDERED;
+            char ch = 0;
+        };
+
+        struct PendingPacket {
+            std::vector<unsigned char> data;
+            SLikeNet::BitSize_t bits = 0;
+            SLikeNet::PacketPriority pri = SLikeNet::HIGH_PRIORITY;
+            SLikeNet::PacketReliability rel = SLikeNet::RELIABLE_ORDERED;
+            char ch = 0;
+        };
+
+        struct PendingRaw {
+            std::vector<unsigned char> data;
+            SLikeNet::PacketPriority pri = SLikeNet::HIGH_PRIORITY;
+            SLikeNet::PacketReliability rel = SLikeNet::RELIABLE_ORDERED;
+            char ch = 0;
+        };
+
+        thread_local std::vector<PendingRpc> pendingRpc;
+        thread_local std::vector<PendingPacket> pendingPacket;
+        thread_local std::vector<PendingRaw> pendingRaw;
+
         using ReceiveHook = kthook::kthook_simple<ReceiveFn, kthook::kFreezeThreads>;
         using SendBitStreamHook = kthook::kthook_simple<SendBitStreamFn, kthook::kFreezeThreads>;
         using SendRawHook = kthook::kthook_simple<SendRawFn, kthook::kFreezeThreads>;
@@ -124,22 +157,29 @@ namespace HassleNet::Detail {
                                 systemIdentifier,
                                 broadcast,
                                 forceReceiptNumber);
+            EnterSendHook();
             SLikeNet::PacketPriority mutablePriority = priority;
             SLikeNet::PacketReliability mutableReliability = reliability;
             char mutableChannel = orderingChannel;
-            if (!DispatchSendPacket(const_cast<SLikeNet::BitStream*>(bitStream),
-                                    mutablePriority,
-                                    mutableReliability,
-                                    mutableChannel))
-                return 0;
-            return original(peer,
-                            bitStream,
-                            mutablePriority,
-                            mutableReliability,
-                            mutableChannel,
-                            systemIdentifier,
-                            broadcast,
-                            forceReceiptNumber);
+            uint32_t result = 0;
+            const bool allow = DispatchSendPacket(const_cast<SLikeNet::BitStream*>(bitStream),
+                                                  mutablePriority,
+                                                  mutableReliability,
+                                                  mutableChannel);
+            if (!allow) {
+                result = 0;
+            } else {
+                result = original(peer,
+                                  bitStream,
+                                  mutablePriority,
+                                  mutableReliability,
+                                  mutableChannel,
+                                  systemIdentifier,
+                                  broadcast,
+                                  forceReceiptNumber);
+            }
+            ExitSendHook();
+            return result;
         }
 
         uint32_t DetourSendRaw(SendRawFn original,
@@ -163,32 +203,37 @@ namespace HassleNet::Detail {
                                 systemIdentifier,
                                 broadcast,
                                 forceReceiptNumber);
+            EnterSendHook();
             SLikeNet::BitStream view(reinterpret_cast<const unsigned char*>(data),
                                      static_cast<unsigned int>(length),
                                      true);
             SLikeNet::PacketPriority mutablePriority = priority;
             SLikeNet::PacketReliability mutableReliability = reliability;
             char mutableChannel = orderingChannel;
-            if (!DispatchSendPacket(&view, mutablePriority, mutableReliability, mutableChannel))
-                return 0;
+            uint32_t result = 0;
+            if (!DispatchSendPacket(&view, mutablePriority, mutableReliability, mutableChannel)) {
+                result = 0;
+            } else {
+                const bool payloadChanged =
+                    view.GetNumberOfBytesUsed() != static_cast<SLikeNet::BitSize_t>(length) ||
+                    memcmp(view.GetData(), data, static_cast<std::size_t>(length)) != 0;
+                const char* sendData =
+                    payloadChanged ? reinterpret_cast<const char*>(view.GetData()) : data;
+                const int sendLength =
+                    payloadChanged ? static_cast<int>(view.GetNumberOfBytesUsed()) : length;
 
-            const bool payloadChanged =
-                view.GetNumberOfBytesUsed() != static_cast<SLikeNet::BitSize_t>(length) ||
-                memcmp(view.GetData(), data, static_cast<std::size_t>(length)) != 0;
-            const char* sendData =
-                payloadChanged ? reinterpret_cast<const char*>(view.GetData()) : data;
-            const int sendLength =
-                payloadChanged ? static_cast<int>(view.GetNumberOfBytesUsed()) : length;
-
-            return original(peer,
-                            sendData,
-                            sendLength,
-                            mutablePriority,
-                            mutableReliability,
-                            mutableChannel,
-                            systemIdentifier,
-                            broadcast,
-                            forceReceiptNumber);
+                result = original(peer,
+                                  sendData,
+                                  sendLength,
+                                  mutablePriority,
+                                  mutableReliability,
+                                  mutableChannel,
+                                  systemIdentifier,
+                                  broadcast,
+                                  forceReceiptNumber);
+            }
+            ExitSendHook();
+            return result;
         }
 
         void DetourRpcSignal(SignalFn original,
@@ -208,32 +253,34 @@ namespace HassleNet::Detail {
             if (!sharedIdentifier || !original)
                 return;
 
+            EnterRpcHook();
             const int id = ParseRpcId(sharedIdentifier);
             int mutableId = id;
             SLikeNet::PacketPriority mutablePriority = priority;
             SLikeNet::PacketReliability mutableReliability = reliability;
             char mutableChannel = orderingChannel;
 
-            if (!DispatchSendRpc(
-                    mutableId, bitStream, mutablePriority, mutableReliability, mutableChannel))
-                return;
+            bool allow = DispatchSendRpc(
+                mutableId, bitStream, mutablePriority, mutableReliability, mutableChannel);
+            if (allow) {
+                char newName[16];
+                const char* outName = sharedIdentifier;
+                if (mutableId != id) {
+                    snprintf(newName, sizeof(newName), "%d", mutableId);
+                    outName = newName;
+                }
 
-            char newName[16];
-            const char* outName = sharedIdentifier;
-            if (mutableId != id) {
-                snprintf(newName, sizeof(newName), "%d", mutableId);
-                outName = newName;
+                original(rpc,
+                         outName,
+                         bitStream,
+                         mutablePriority,
+                         mutableReliability,
+                         mutableChannel,
+                         systemIdentifier,
+                         broadcast,
+                         invokeLocal);
             }
-
-            original(rpc,
-                     outName,
-                     bitStream,
-                     mutablePriority,
-                     mutableReliability,
-                     mutableChannel,
-                     systemIdentifier,
-                     broadcast,
-                     invokeLocal);
+            ExitRpcHook();
         }
 
         char DetourRpcOnReceive(RpcOnReceiveFn original, void* rpc, SLikeNet::Packet* packet) {
@@ -342,6 +389,149 @@ namespace HassleNet::Detail {
         lastRpcBlocked = false;
         const char result = entry(rpc, packet);
         return result != kRrStopProcessingAndDeallocate && !lastRpcBlocked;
+    }
+
+    void EnterSendHook() {
+        ++sendHookDepth;
+    }
+
+    void ExitSendHook() {
+        --sendHookDepth;
+        if (sendHookDepth == 0 && rpcHookDepth == 0) {
+            FlushPending();
+        }
+    }
+
+    void EnterRpcHook() {
+        ++rpcHookDepth;
+    }
+
+    void ExitRpcHook() {
+        --rpcHookDepth;
+        if (sendHookDepth == 0 && rpcHookDepth == 0) {
+            FlushPending();
+        }
+    }
+
+    bool IsInSendHook() {
+        return sendHookDepth > 0 || rpcHookDepth > 0;
+    }
+
+    void QueueRpc(int id,
+                  SLikeNet::BitStream* bs,
+                  SLikeNet::PacketPriority pri,
+                  SLikeNet::PacketReliability rel,
+                  char ch) {
+        PendingRpc p;
+        p.id = id;
+        p.pri = pri;
+        p.rel = rel;
+        p.ch = ch;
+        if (bs && bs->GetNumberOfBitsUsed() > 0) {
+            p.bits = bs->GetNumberOfBitsUsed();
+            p.data.assign(bs->GetData(), bs->GetData() + bs->GetNumberOfBytesUsed());
+        }
+        pendingRpc.push_back(std::move(p));
+    }
+
+    void QueuePacket(SLikeNet::BitStream* bs,
+                     SLikeNet::PacketPriority pri,
+                     SLikeNet::PacketReliability rel,
+                     char ch) {
+        if (!bs)
+            return;
+        PendingPacket p;
+        p.pri = pri;
+        p.rel = rel;
+        p.ch = ch;
+        p.bits = bs->GetNumberOfBitsUsed();
+        if (p.bits > 0) {
+            p.data.assign(bs->GetData(), bs->GetData() + bs->GetNumberOfBytesUsed());
+        }
+        pendingPacket.push_back(std::move(p));
+    }
+
+    void QueuePacketRaw(const void* data,
+                        int len,
+                        SLikeNet::PacketPriority pri,
+                        SLikeNet::PacketReliability rel,
+                        char ch) {
+        if (!data || len <= 0)
+            return;
+        PendingRaw p;
+        p.pri = pri;
+        p.rel = rel;
+        p.ch = ch;
+        p.data.assign(static_cast<const unsigned char*>(data),
+                      static_cast<const unsigned char*>(data) + len);
+        pendingRaw.push_back(std::move(p));
+    }
+
+    void FlushPending() {
+        if (isFlushing)
+            return;
+        if (sendHookDepth != 0 || rpcHookDepth != 0)
+            return;
+        if (pendingRpc.empty() && pendingPacket.empty() && pendingRaw.empty())
+            return;
+
+        isFlushing = true;
+
+        auto pendingRpcCopy = std::move(pendingRpc);
+        pendingRpc.clear();
+        auto pendingPacketCopy = std::move(pendingPacket);
+        pendingPacket.clear();
+        auto pendingRawCopy = std::move(pendingRaw);
+        pendingRaw.clear();
+
+        for (auto& q : pendingRpcCopy) {
+            void* rpc = rpc4.load(std::memory_order_acquire);
+            if (!rpc || !origRpcSignal)
+                continue;
+            SLikeNet::BitStream bs;
+            if (!q.data.empty()) {
+                bs.WriteBits(q.data.data(), q.bits, false);
+            }
+            char name[16];
+            snprintf(name, sizeof(name), "%d", q.id);
+            SLikeNet::AddressOrGUID target(SLikeNet::UNASSIGNED_SYSTEM_ADDRESS());
+            origRpcSignal(
+                rpc, name, q.bits ? &bs : nullptr, q.pri, q.rel, q.ch, target, false, false);
+        }
+
+        for (auto& q : pendingPacketCopy) {
+            void* peer = globalPeer.load(std::memory_order_acquire);
+            if (!peer || !origSendBitStream)
+                continue;
+            if (q.data.empty())
+                continue;
+            SLikeNet::BitStream bs(q.data.data(), static_cast<unsigned int>(q.data.size()), false);
+            bs.SetWriteOffset(q.bits);
+            SLikeNet::AddressOrGUID target(SLikeNet::UNASSIGNED_SYSTEM_ADDRESS());
+            origSendBitStream(peer, &bs, q.pri, q.rel, q.ch, target, false, 0);
+        }
+
+        for (auto& q : pendingRawCopy) {
+            void* peer = globalPeer.load(std::memory_order_acquire);
+            if (!peer || !origSendRaw)
+                continue;
+            SLikeNet::AddressOrGUID target(SLikeNet::UNASSIGNED_SYSTEM_ADDRESS());
+            origSendRaw(peer,
+                        reinterpret_cast<const char*>(q.data.data()),
+                        static_cast<int>(q.data.size()),
+                        q.pri,
+                        q.rel,
+                        q.ch,
+                        target,
+                        false,
+                        0);
+        }
+
+        isFlushing = false;
+
+        if (!pendingRpc.empty() || !pendingPacket.empty() || !pendingRaw.empty()) {
+            FlushPending();
+        }
     }
 
     bool InstallHooks() {
