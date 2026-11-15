@@ -283,10 +283,6 @@ namespace HassleNet {
                  char orderingChannel) {
         if (IsRpcBlocked(id))
             return false;
-        if (Detail::IsInSendHook()) {
-            Detail::QueueRpc(id, bs, priority, reliability, orderingChannel);
-            return true;
-        }
         void* rpc4 = Detail::Rpc4Raw();
         if (!rpc4 || !Detail::origRpcSignal)
             return false;
@@ -304,10 +300,6 @@ namespace HassleNet {
         SLikeNet::RakPeerInterface* peer = GetPeer();
         if (!peer || !bs)
             return false;
-        if (Detail::IsInSendHook()) {
-            Detail::QueuePacket(bs, priority, reliability, orderingChannel);
-            return true;
-        }
         peer->Send(bs, priority, reliability, orderingChannel, ServerTarget(), false);
         return true;
     }
@@ -320,10 +312,6 @@ namespace HassleNet {
         SLikeNet::RakPeerInterface* peer = GetPeer();
         if (!peer || !data || length <= 0)
             return false;
-        if (Detail::IsInSendHook()) {
-            Detail::QueuePacketRaw(data, length, priority, reliability, orderingChannel);
-            return true;
-        }
         peer->Send(reinterpret_cast<const char*>(data),
                    length,
                    priority,

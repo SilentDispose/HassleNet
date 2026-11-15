@@ -77,26 +77,4 @@ namespace HassleNet::Detail {
                          SLikeNet::PacketPriority& priority,
                          SLikeNet::PacketReliability& reliability,
                          char& orderingChannel);
-
-    void EnterSendHook();
-    void ExitSendHook();
-    void EnterRpcHook();
-    void ExitRpcHook();
-    bool IsInSendHook();
-
-    void QueueRpc(int id,
-                  SLikeNet::BitStream* bs,
-                  SLikeNet::PacketPriority pri,
-                  SLikeNet::PacketReliability rel,
-                  char ch);
-    void QueuePacket(SLikeNet::BitStream* bs,
-                     SLikeNet::PacketPriority pri,
-                     SLikeNet::PacketReliability rel,
-                     char ch);
-    void QueuePacketRaw(const void* data,
-                        int len,
-                        SLikeNet::PacketPriority pri,
-                        SLikeNet::PacketReliability rel,
-                        char ch);
-    void FlushPending();
 }
