@@ -1,67 +1,18 @@
 # HassleNet
 
-Client-side **SLikeNet** hooking library for **Hassle Online** (Unreal Engine 5.8).
+Client-side **SLikeNet** hooking library for **Hassle Online** (Unreal Engine 5).
 It intercepts the game's RakNet layer (RPC4 plugin + `RakPeer`) and exposes a small,
-rakhook-style API for reading, blocking, sending and emulating network traffic.
-
-Everything is resolved at startup from byte patterns — no hardcoded absolute addresses.
-
-## Features
-
-- RPC4: `OnReceiveRpc` / `OnSendRpc` with a mutable `int& id` and payload `BitStream*`.
-- Packets: `OnReceivePacket` (`SLikeNet::Packet*`) and `OnSendPacket` (mutable priority/reliability/channel).
-- Returning `false` from a handler drops the RPC/packet.
-- RPC id and payload can be modified on the fly; the packet is re-serialized before the game sees it.
-- `SendRpc` / `SendPacket` / `SendPacketRaw` to the connected server.
-- `EmulateRpc` (synchronous local dispatch) and `EmulatePacket` (queued receive).
-- ABI-exact `SLikeNet::BitStream`, protocol types and `StringCompressor`
-  (byte-identical wire format, verified against upstream SLikeNet).
-- Full `RakPeerInterface` access through `GetPeer()`.
-- Static library: hooks use the vendored kthook, without MinHook global initialization. Link through the CMake `HassleNet` target so its dependencies are propagated.
-
-## Build
-
-Requirements: Windows x64, MSVC 2022 (or newer), CMake 3.20+.
-kthook and its dependencies are vendored in `third_party/kthook`; no network fetch is required. See `third_party/kthook/README-HassleNet.md` for the local Win64 relay fix.
-
-```bat
-cmake -S . -B build -A x64
-cmake --build build --config Release
-```
-
-Outputs:
-
-- `build/Release/HassleNet.lib` — static library;
-- `build/Example/<config>/HassleNetExample.asi` — example plugin. Its host/ASI loader must call the exported `InitializeASI` after loading; loading alone does not start the hooks.
-
-## Layout
-
-```
-Include/HassleNet/
-    HassleNet.h              public API
-    Detail/Internal.h        hook/dispatch plumbing (library use)
-    Detail/PatternScan.h     byte signature scanner
-    SLikeNet/BitStream.h
-    SLikeNet/DS_HuffmanEncodingTree.h
-    SLikeNet/MessageIdentifiers.h
-    SLikeNet/PeerInterface.h
-    SLikeNet/StringCompressor.h
-    SLikeNet/Types.h
-Source/                      implementation
-Example/                     example ASI plugin
-```
+blocking, sending and emulating network traffic.
 
 ## Usage
 
 ```cpp
 #include "HassleNet/HassleNet.h"
 
-// Must be called after the game process is up (not from inside DllMain's loader lock).
 if (!HassleNet::Initialize())
     return;
 
 HassleNet::OnReceiveRpc([](int& id, SLikeNet::BitStream* bs) {
-    // returning false drops the RPC before the game handler runs
     return true;
 });
 
@@ -73,7 +24,6 @@ HassleNet::OnSendRpc([](int& id, SLikeNet::BitStream* bs,
 });
 
 HassleNet::OnReceivePacket([](SLikeNet::Packet* packet) {
-    // packet->data[0] = message id, packet->systemAddress = sender
     return true;
 });
 
@@ -106,35 +56,21 @@ HassleNet::BlockRpc(42);
 HassleNet::BlockPacketId(SLikeNet::ID_CONNECTION_LOST);
 ```
 
-## Behaviour notes
+### Public API
 
-- **RPC ids are numeric.** The game's wrapper converts a `uint8` id to a decimal string
-  (`FString::FromInt`) and uses it as the RPC4 shared identifier. HassleNet parses it back
-  to `int`; a non-numeric identifier yields `id == -1`.
-- Only `ID_RPC4_SIGNAL` is processed; `ID_RPC4_CALL` / `ID_RPC4_RETURN` pass through untouched.
-- `OnReceiveRpc` runs inside `RPC4::OnReceive`, before the game handler. Changing `id` or
-  writing to the payload rebuilds the packet; returning `false` returns
-  `RR_STOP_PROCESSING_AND_DEALLOCATE`.
-- `OnReceivePacket` is hooked at `RakPeer::Receive`, i.e. it only sees packets that were
-  not consumed by a plugin. RPCs and game packets are consumed inside `Receive` by the
-  game's own plugin, so use `OnReceiveRpc` for them.
-- `EmulateRpc` bypasses the network and runs the local receive path synchronously, using
-  the last known sender (server) address. `EmulatePacket` allocates a `Packet` via
-  `RakPeer::AllocatePacket` and pushes it into the receive queue.
-- The library is client-side: there are no player-list / kick / ban APIs. Everything else
-  is available through `GetPeer()` (`SLikeNet::RakPeerInterface*`).
-
-## SLikeNet compatibility
-
-The vendored headers replicate the exact ABI of the shipping build:
-
-- `BitStream` — 288 bytes, `readOffset@8`, `data@16`, `copyData@24`, `stackData@25`;
-- `SystemAddress` 20, `RakNetGUID` 16, `AddressOrGUID` 40, `Packet` 64 bytes;
-- `RakPeerInterface` — all 87 virtual slots in the binary's order
-  (`Send(BitStream*)` precedes `Send(char*, int)`);
-- compressed numbers are written big-endian, matching SLikeNet builds without
-  `__BITSTREAM_NATIVE_END`;
-- `StringCompressor` output was diffed byte-for-byte against upstream SLikeNet.
+| Function | Purpose |
+|---|---|
+| `Initialize()` / `Destroy()` / `IsInitialized()` | library lifetime |
+| `IsReady()` | peer and RPC4 have been captured |
+| `GetPeer()` / `SetPeer()` | `SLikeNet::RakPeerInterface*` |
+| `GetRpc4()` / `SetRpc4()` | raw RPC4 plugin pointer |
+| `OnReceiveRpc` / `OnSendRpc` | RPC handlers |
+| `OnReceivePacket` / `OnSendPacket` | packet handlers |
+| `BlockRpc(id, block)` / `IsRpcBlocked(id)` | RPC id filter |
+| `BlockPacketId(id, block)` / `IsPacketIdBlocked(id)` | message id filter |
+| `SendRpc` / `SendPacket` / `SendPacketRaw` | send to server |
+| `EmulateRpc` / `EmulatePacket` | local injection |
+| `ClearHandlers()` | drop all handlers |
 
 ## License
 
@@ -142,4 +78,5 @@ HassleNet is MIT-licensed, see [LICENSE](LICENSE).
 
 Ported SLikeNet/`RakNet` code remains under its original licenses
 (BSD-style, Copyright (c) 2014 Oculus VR; MIT-style modifications,
-Copyright (c) 2017–2019 SLikeSoft UG). Vendored kthook and its dependencies retain their respective licenses in `kthook`.
+Copyright (c) 2017–2019 SLikeSoft UG). kthook and its dependencies retain their respective
+licenses in the kthook repository.
