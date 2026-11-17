@@ -31,12 +31,12 @@ namespace HassleNet::Detail {
     namespace {
         constexpr std::uintptr_t kImageBase = 0x140000000ULL;
 
-        constexpr std::uintptr_t kReceiveAddress = 0x145724560ULL;
-        constexpr std::uintptr_t kSendBitStreamAddress = 0x1457278A0ULL;
-        constexpr std::uintptr_t kSendRawAddress = 0x1457276C0ULL;
-        constexpr std::uintptr_t kDeallocateAddress = 0x14571C940ULL;
-        constexpr std::uintptr_t kRpcSignalAddress = 0x1457333E0ULL;
-        constexpr std::uintptr_t kRpcOnReceiveAddress = 0x145730AF0ULL;
+        constexpr std::uintptr_t kReceiveAddress = 0x145723F60ULL;
+        constexpr std::uintptr_t kSendBitStreamAddress = 0x1457272A0ULL;
+        constexpr std::uintptr_t kSendRawAddress = 0x1457270C0ULL;
+        constexpr std::uintptr_t kDeallocateAddress = 0x14571C340ULL;
+        constexpr std::uintptr_t kRpcSignalAddress = 0x145732DE0ULL;
+        constexpr std::uintptr_t kRpcOnReceiveAddress = 0x1457304F0ULL;
 
         constexpr unsigned char kRpcPluginId = SLikeNet::ID_RPC_PLUGIN;
         constexpr unsigned char kRpc4Signal = 2;
