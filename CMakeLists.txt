@@ -12,12 +12,14 @@ FetchContent_Declare(
 FetchContent_MakeAvailable(kthook)
 
 add_library(${PROJECT_NAME} STATIC
-    Source/BitStream.cpp
-    Source/DS_HuffmanEncodingTree.cpp
-    Source/HassleNet.cpp
-    Source/Hooks.cpp
-    Source/SLikeNetTypes.cpp
-    Source/StringCompressor.cpp
+    Source/HassleNet/Config.cpp
+    Source/HassleNet/HassleNet.cpp
+    Source/HassleNet/Hooks.cpp
+    Source/HassleNet/Metadata.cpp
+    Source/SLikeNet/BitStream.cpp
+    Source/SLikeNet/DS_HuffmanEncodingTree.cpp
+    Source/SLikeNet/StringCompressor.cpp
+    Source/SLikeNet/Types.cpp
 )
 
 target_include_directories(${PROJECT_NAME} PUBLIC Include)

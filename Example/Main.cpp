@@ -12,9 +12,8 @@ static void AttachConsole() {
 static void Initialize() {
     AttachConsole();
 
-    if (!HassleNet::Initialize()) {
+    if (!HassleNet::Initialize())
         return;
-    }
 
     HassleNet::OnReceiveRpc([](int& id, SLikeNet::BitStream* bs) {
         printf("[OnReceiveRpc] id: %d | bs: %p\n", id, bs);
@@ -56,16 +55,12 @@ static void Initialize() {
     });
 }
 
-extern "C" __declspec(dllexport) void InitializeASI() {
-    Initialize();
-}
-
-extern "C" __declspec(dllexport) void ShutdownASI() {
-    HassleNet::Destroy();
-}
-
 BOOL APIENTRY DllMain(HMODULE handle, DWORD reason, LPVOID) {
-    if (reason == DLL_PROCESS_ATTACH)
+    if (reason == DLL_PROCESS_ATTACH) {
         DisableThreadLibraryCalls(handle);
+        Initialize();
+    } else if (reason == DLL_PROCESS_DETACH) {
+        HassleNet::Destroy();
+    }
     return TRUE;
 }

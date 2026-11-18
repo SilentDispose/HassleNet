@@ -38,8 +38,6 @@ namespace HassleNet {
     bool IsReady();
     SLikeNet::RakPeerInterface* GetPeer();
     void* GetRpc4();
-    void SetPeer(SLikeNet::RakPeerInterface* peer);
-    void SetRpc4(void* rpc4);
 
     bool SendRpc(int id,
                  SLikeNet::BitStream* bs = nullptr,

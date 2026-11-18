@@ -18,9 +18,6 @@ namespace SLikeNet {
 
         static StringCompressor* Instance();
 
-        static void AddReference();
-        static void RemoveReference();
-
         void
         GenerateTreeFromStrings(unsigned char* input, unsigned inputLength, uint8_t languageId);
 

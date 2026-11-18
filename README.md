@@ -62,8 +62,8 @@ HassleNet::BlockPacketId(SLikeNet::ID_CONNECTION_LOST);
 |---|---|
 | `Initialize()` / `Destroy()` / `IsInitialized()` | library lifetime |
 | `IsReady()` | peer and RPC4 have been captured |
-| `GetPeer()` / `SetPeer()` | `SLikeNet::RakPeerInterface*` |
-| `GetRpc4()` / `SetRpc4()` | raw RPC4 plugin pointer |
+| `GetPeer()` | `SLikeNet::RakPeerInterface*` |
+| `GetRpc4()` | raw RPC4 plugin pointer |
 | `OnReceiveRpc` / `OnSendRpc` | RPC handlers |
 | `OnReceivePacket` / `OnSendPacket` | packet handlers |
 | `BlockRpc(id, block)` / `IsRpcBlocked(id)` | RPC id filter |
