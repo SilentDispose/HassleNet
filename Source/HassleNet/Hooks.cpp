@@ -145,17 +145,16 @@ static RpcSendResult ProcessOutgoingRpc(const SLikeNet::BitStream* bitStream,
 
 static SLikeNet::Packet* DetourReceive(ReceiveFn original, void* peer) {
     CapturePeer(peer);
-    for (int guard = 0; guard < 1024; ++guard) {
-        SLikeNet::Packet* packet = original(peer);
-        if (!packet)
-            return nullptr;
-        CaptureSender(packet->systemAddress, packet->guid);
-        if (DispatchReceivePacket(packet))
-            return packet;
+    SLikeNet::Packet* packet = original(peer);
+    if (!packet)
+        return nullptr;
+    CaptureSender(packet->systemAddress, packet->guid);
+    if (!DispatchReceivePacket(packet)) {
         if (origDeallocatePacket)
             origDeallocatePacket(peer, packet);
+        return nullptr;
     }
-    return original(peer);
+    return packet;
 }
 
 static uint32_t DetourSendBitStream(SendBitStreamFn original,
@@ -331,7 +330,10 @@ static bool InstallHooks() {
 
     if (!receiveHook->install() || !sendBitStreamHook->install() || !sendRawHook->install() ||
         !rpcOnReceiveHook->install()) {
-        RemoveHooks();
+        receiveHook.release();
+        sendBitStreamHook.release();
+        sendRawHook.release();
+        rpcOnReceiveHook.release();
         return false;
     }
 
@@ -397,10 +399,10 @@ bool HassleNet::Detail::EmulateRpcPacket(SLikeNet::Packet* packet) {
 }
 
 void HassleNet::Detail::RemoveHooks() {
-    rpcOnReceiveHook.reset();
-    sendRawHook.reset();
-    sendBitStreamHook.reset();
-    receiveHook.reset();
+    rpcOnReceiveHook.release();
+    sendRawHook.release();
+    sendBitStreamHook.release();
+    receiveHook.release();
 
     origReceive = nullptr;
     origSendBitStream = nullptr;
