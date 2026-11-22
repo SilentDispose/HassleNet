@@ -65,14 +65,59 @@ static void** VirtualSlotPtr(void* object, size_t index) {
     return reinterpret_cast<void**>(reinterpret_cast<uintptr_t>(vtable) + index * sizeof(void*));
 }
 
-static bool WriteVirtualSlot(void* object, size_t index, void* value) {
+static void* CasSlot(void** slot, void* value, void* expected) {
+    while (true) {
+        void* observed = nullptr;
+        bool faulted = false;
+        __try {
+            observed = InterlockedCompareExchangePointer(slot, value, expected);
+        } __except (EXCEPTION_EXECUTE_HANDLER) {
+            faulted = true;
+        }
+        if (!faulted)
+            return observed;
+        DWORD oldProtect = 0;
+        if (!VirtualProtect(slot, sizeof(void*), PAGE_EXECUTE_READWRITE, &oldProtect))
+            return nullptr;
+    }
+}
+
+static void* HookVirtualSlot(void* object, size_t index, void* value) {
     void** slot = VirtualSlotPtr(object, index);
+
+    MEMORY_BASIC_INFORMATION mbi = {};
+    if (!VirtualQuery(slot, &mbi, sizeof(mbi)))
+        return nullptr;
+
+    void* previous = *slot;
+    while (previous) {
+        void* observed = CasSlot(slot, value, previous);
+        if (!observed)
+            return nullptr;
+        if (observed == previous)
+            break;
+        previous = observed;
+    }
+    if (!previous)
+        return nullptr;
+
     DWORD oldProtect = 0;
-    if (!VirtualProtect(slot, sizeof(void*), PAGE_EXECUTE_READWRITE, &oldProtect))
+    VirtualProtect(slot, sizeof(void*), mbi.Protect, &oldProtect);
+    return previous;
+}
+
+static bool UnhookVirtualSlot(void* object, size_t index, void* mine, void* previous) {
+    void** slot = VirtualSlotPtr(object, index);
+
+    MEMORY_BASIC_INFORMATION mbi = {};
+    if (!VirtualQuery(slot, &mbi, sizeof(mbi)))
         return false;
-    *slot = value;
-    VirtualProtect(slot, sizeof(void*), oldProtect, &oldProtect);
-    return true;
+
+    const bool unlinked = CasSlot(slot, previous, mine) == mine;
+
+    DWORD oldProtect = 0;
+    VirtualProtect(slot, sizeof(void*), mbi.Protect, &oldProtect);
+    return unlinked;
 }
 
 static bool ParseRpcPacket(const unsigned char* data,
@@ -311,20 +356,24 @@ static char DetourRpcOnReceive(void* rpc, SLikeNet::Packet* packet) {
 static bool InstallHooks() {
     origDeallocatePacket = reinterpret_cast<DeallocateFn>(addresses.deallocatePacket);
 
-    origReceive = reinterpret_cast<ReceiveFn>(addresses.receive);
-    if (!WriteVirtualSlot(hookedPeer, kReceiveSlot, reinterpret_cast<void*>(&DetourReceive)))
+    origReceive = reinterpret_cast<ReceiveFn>(
+        HookVirtualSlot(hookedPeer, kReceiveSlot, reinterpret_cast<void*>(&DetourReceive)));
+    if (!origReceive)
         return false;
 
-    origSendBitStream = reinterpret_cast<SendBitStreamFn>(addresses.sendBitStream);
-    if (!WriteVirtualSlot(hookedPeer, kSendBitStreamSlot, reinterpret_cast<void*>(&DetourSendBitStream)))
+    origSendBitStream = reinterpret_cast<SendBitStreamFn>(
+        HookVirtualSlot(hookedPeer, kSendBitStreamSlot, reinterpret_cast<void*>(&DetourSendBitStream)));
+    if (!origSendBitStream)
         return false;
 
-    origSendRaw = reinterpret_cast<SendRawFn>(addresses.sendRaw);
-    if (!WriteVirtualSlot(hookedPeer, kSendRawSlot, reinterpret_cast<void*>(&DetourSendRaw)))
+    origSendRaw = reinterpret_cast<SendRawFn>(
+        HookVirtualSlot(hookedPeer, kSendRawSlot, reinterpret_cast<void*>(&DetourSendRaw)));
+    if (!origSendRaw)
         return false;
 
-    origRpcOnReceive = reinterpret_cast<RpcOnReceiveFn>(addresses.rpcOnReceive);
-    if (!WriteVirtualSlot(hookedRpc, kRpcOnReceiveSlot, reinterpret_cast<void*>(&DetourRpcOnReceive)))
+    origRpcOnReceive = reinterpret_cast<RpcOnReceiveFn>(
+        HookVirtualSlot(hookedRpc, kRpcOnReceiveSlot, reinterpret_cast<void*>(&DetourRpcOnReceive)));
+    if (!origRpcOnReceive)
         return false;
 
     return true;
@@ -375,8 +424,11 @@ bool HassleNet::Detail::GetLastSender(SLikeNet::SystemAddress& address,
 
 bool HassleNet::Detail::EmulateRpcPacket(SLikeNet::Packet* packet) {
     void* rpc = rpc4.load(std::memory_order_acquire);
-    auto entry = reinterpret_cast<RpcOnReceiveFn>(addresses.rpcOnReceive);
-    if (!rpc || !entry || !origRpcOnReceive || !packet)
+    if (!rpc || !packet)
+        return false;
+
+    auto entry = reinterpret_cast<RpcOnReceiveFn>(*VirtualSlotPtr(rpc, kRpcOnReceiveSlot));
+    if (!entry)
         return false;
 
     lastRpcBlocked = false;
@@ -385,24 +437,35 @@ bool HassleNet::Detail::EmulateRpcPacket(SLikeNet::Packet* packet) {
 }
 
 void HassleNet::Detail::RemoveHooks() {
+    bool unlinkedReceive = true;
+    bool unlinkedSendBitStream = true;
+    bool unlinkedSendRaw = true;
+    bool unlinkedRpc = true;
+
     if (hookedPeer) {
-        if (*VirtualSlotPtr(hookedPeer, kReceiveSlot) == reinterpret_cast<void*>(&DetourReceive))
-            WriteVirtualSlot(hookedPeer, kReceiveSlot, reinterpret_cast<void*>(origReceive));
-        if (*VirtualSlotPtr(hookedPeer, kSendBitStreamSlot) == reinterpret_cast<void*>(&DetourSendBitStream))
-            WriteVirtualSlot(hookedPeer, kSendBitStreamSlot, reinterpret_cast<void*>(origSendBitStream));
-        if (*VirtualSlotPtr(hookedPeer, kSendRawSlot) == reinterpret_cast<void*>(&DetourSendRaw))
-            WriteVirtualSlot(hookedPeer, kSendRawSlot, reinterpret_cast<void*>(origSendRaw));
+        unlinkedReceive = UnhookVirtualSlot(
+            hookedPeer, kReceiveSlot, reinterpret_cast<void*>(&DetourReceive), origReceive);
+        unlinkedSendBitStream = UnhookVirtualSlot(hookedPeer,
+                                                  kSendBitStreamSlot,
+                                                  reinterpret_cast<void*>(&DetourSendBitStream),
+                                                  origSendBitStream);
+        unlinkedSendRaw = UnhookVirtualSlot(
+            hookedPeer, kSendRawSlot, reinterpret_cast<void*>(&DetourSendRaw), origSendRaw);
     }
     if (hookedRpc) {
-        if (*VirtualSlotPtr(hookedRpc, kRpcOnReceiveSlot) == reinterpret_cast<void*>(&DetourRpcOnReceive))
-            WriteVirtualSlot(hookedRpc, kRpcOnReceiveSlot, reinterpret_cast<void*>(origRpcOnReceive));
+        unlinkedRpc = UnhookVirtualSlot(
+            hookedRpc, kRpcOnReceiveSlot, reinterpret_cast<void*>(&DetourRpcOnReceive), origRpcOnReceive);
     }
 
-    origReceive = nullptr;
-    origSendBitStream = nullptr;
-    origSendRaw = nullptr;
-    origDeallocatePacket = nullptr;
-    origRpcOnReceive = nullptr;
+    if (unlinkedReceive)
+        origReceive = nullptr;
+    if (unlinkedSendBitStream)
+        origSendBitStream = nullptr;
+    if (unlinkedSendRaw)
+        origSendRaw = nullptr;
+    if (unlinkedRpc)
+        origRpcOnReceive = nullptr;
+
     hooked = false;
 }
 
