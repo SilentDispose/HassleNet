@@ -3,14 +3,6 @@ project(HassleNet)
 
 option(HASSLENET_BUILD_EXAMPLE "Build the example plugin" OFF)
 
-include(FetchContent)
-FetchContent_Declare(
-    kthook
-    GIT_REPOSITORY https://github.com/SilentDispose/kthook.git
-    GIT_TAG 4331456543f408c42122ced22144cfb698031266
-)
-FetchContent_MakeAvailable(kthook)
-
 add_library(${PROJECT_NAME} STATIC
     Source/HassleNet/Config.cpp
     Source/HassleNet/HassleNet.cpp
@@ -23,10 +15,7 @@ add_library(${PROJECT_NAME} STATIC
 )
 
 target_include_directories(${PROJECT_NAME} PUBLIC Include)
-target_link_libraries(${PROJECT_NAME}
-    PUBLIC kthook
-    PRIVATE ws2_32
-)
+target_link_libraries(${PROJECT_NAME} PRIVATE ws2_32)
 
 target_compile_features(${PROJECT_NAME} PUBLIC cxx_std_17)
 

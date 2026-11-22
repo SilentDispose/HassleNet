@@ -13,8 +13,6 @@
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
-#include <kthook/kthook.hpp>
-#include <memory>
 #include <mutex>
 #include <thread>
 #include <vector>
@@ -55,20 +53,27 @@ static SLikeNet::AddressOrGUID lastSendTarget(SLikeNet::UNASSIGNED_SYSTEM_ADDRES
 
 static thread_local bool lastRpcBlocked = false;
 
-using ReceiveHook = kthook::kthook_simple<ReceiveFn, kthook::kFreezeThreads>;
-using SendBitStreamHook = kthook::kthook_simple<SendBitStreamFn, kthook::kFreezeThreads>;
-using SendRawHook = kthook::kthook_simple<SendRawFn, kthook::kFreezeThreads>;
-using RpcReceiveHook = kthook::kthook_simple<RpcOnReceiveFn, kthook::kFreezeThreads>;
-
-static std::unique_ptr<ReceiveHook> receiveHook;
-static std::unique_ptr<SendBitStreamHook> sendBitStreamHook;
-static std::unique_ptr<SendRawHook> sendRawHook;
-static std::unique_ptr<RpcReceiveHook> rpcOnReceiveHook;
-
 static std::mutex installMutex;
 static bool hooked = false;
+static void* hookedPeer = nullptr;
+static void* hookedRpc = nullptr;
 static std::atomic<bool> resolverStop = false;
 static std::thread resolverThread;
+
+static void** VirtualSlotPtr(void* object, size_t index) {
+    void* vtable = *reinterpret_cast<void**>(object);
+    return reinterpret_cast<void**>(reinterpret_cast<uintptr_t>(vtable) + index * sizeof(void*));
+}
+
+static bool WriteVirtualSlot(void* object, size_t index, void* value) {
+    void** slot = VirtualSlotPtr(object, index);
+    DWORD oldProtect = 0;
+    if (!VirtualProtect(slot, sizeof(void*), PAGE_EXECUTE_READWRITE, &oldProtect))
+        return false;
+    *slot = value;
+    VirtualProtect(slot, sizeof(void*), oldProtect, &oldProtect);
+    return true;
+}
 
 static bool ParseRpcPacket(const unsigned char* data,
                            unsigned int bytes,
@@ -143,9 +148,9 @@ static RpcSendResult ProcessOutgoingRpc(const SLikeNet::BitStream* bitStream,
     return RpcSendResult::Changed;
 }
 
-static SLikeNet::Packet* DetourReceive(ReceiveFn original, void* peer) {
+static SLikeNet::Packet* DetourReceive(void* peer) {
     CapturePeer(peer);
-    SLikeNet::Packet* packet = original(peer);
+    SLikeNet::Packet* packet = origReceive(peer);
     if (!packet)
         return nullptr;
     CaptureSender(packet->systemAddress, packet->guid);
@@ -157,8 +162,7 @@ static SLikeNet::Packet* DetourReceive(ReceiveFn original, void* peer) {
     return packet;
 }
 
-static uint32_t DetourSendBitStream(SendBitStreamFn original,
-                                    void* peer,
+static uint32_t DetourSendBitStream(void* peer,
                                     const SLikeNet::BitStream* bitStream,
                                     SLikeNet::PacketPriority priority,
                                     SLikeNet::PacketReliability reliability,
@@ -171,14 +175,14 @@ static uint32_t DetourSendBitStream(SendBitStreamFn original,
         CaptureSendTarget(systemIdentifier);
 
     if (!bitStream || bitStream->GetNumberOfBytesUsed() == 0)
-        return original(peer,
-                        bitStream,
-                        priority,
-                        reliability,
-                        orderingChannel,
-                        systemIdentifier,
-                        broadcast,
-                        forceReceiptNumber);
+        return origSendBitStream(peer,
+                                 bitStream,
+                                 priority,
+                                 reliability,
+                                 orderingChannel,
+                                 systemIdentifier,
+                                 broadcast,
+                                 forceReceiptNumber);
 
     auto mutablePriority = priority;
     auto mutableReliability = reliability;
@@ -203,18 +207,17 @@ static uint32_t DetourSendBitStream(SendBitStreamFn original,
                             mutableChannel))
         return 0;
 
-    return original(peer,
-                    outgoing,
-                    mutablePriority,
-                    mutableReliability,
-                    mutableChannel,
-                    systemIdentifier,
-                    broadcast,
-                    forceReceiptNumber);
+    return origSendBitStream(peer,
+                             outgoing,
+                             mutablePriority,
+                             mutableReliability,
+                             mutableChannel,
+                             systemIdentifier,
+                             broadcast,
+                             forceReceiptNumber);
 }
 
-static uint32_t DetourSendRaw(SendRawFn original,
-                              void* peer,
+static uint32_t DetourSendRaw(void* peer,
                               const char* data,
                               const int length,
                               SLikeNet::PacketPriority priority,
@@ -228,15 +231,15 @@ static uint32_t DetourSendRaw(SendRawFn original,
         CaptureSendTarget(systemIdentifier);
 
     if (!data || length <= 0)
-        return original(peer,
-                        data,
-                        length,
-                        priority,
-                        reliability,
-                        orderingChannel,
-                        systemIdentifier,
-                        broadcast,
-                        forceReceiptNumber);
+        return origSendRaw(peer,
+                           data,
+                           length,
+                           priority,
+                           reliability,
+                           orderingChannel,
+                           systemIdentifier,
+                           broadcast,
+                           forceReceiptNumber);
 
     SLikeNet::BitStream view(reinterpret_cast<const unsigned char*>(data), length, true);
     auto mutablePriority = priority;
@@ -250,18 +253,18 @@ static uint32_t DetourSendRaw(SendRawFn original,
     const char* sendData = changed ? reinterpret_cast<const char*>(view.GetData()) : data;
     int sendLength = changed ? static_cast<int>(view.GetNumberOfBytesUsed()) : length;
 
-    return original(peer,
-                    sendData,
-                    sendLength,
-                    mutablePriority,
-                    mutableReliability,
-                    mutableChannel,
-                    systemIdentifier,
-                    broadcast,
-                    forceReceiptNumber);
+    return origSendRaw(peer,
+                       sendData,
+                       sendLength,
+                       mutablePriority,
+                       mutableReliability,
+                       mutableChannel,
+                       systemIdentifier,
+                       broadcast,
+                       forceReceiptNumber);
 }
 
-static char DetourRpcOnReceive(RpcOnReceiveFn original, void* rpc, SLikeNet::Packet* packet) {
+static char DetourRpcOnReceive(void* rpc, SLikeNet::Packet* packet) {
     CaptureRpc4(rpc);
     if (rpc)
         CapturePeer(*reinterpret_cast<void**>(reinterpret_cast<unsigned char*>(rpc) + 8));
@@ -269,7 +272,7 @@ static char DetourRpcOnReceive(RpcOnReceiveFn original, void* rpc, SLikeNet::Pac
     int id = -1;
     SLikeNet::BitStream payload;
     if (!packet || !ParseRpcPacket(packet->data, packet->length, id, payload))
-        return original(rpc, packet);
+        return origRpcOnReceive(rpc, packet);
 
     CaptureSender(packet->systemAddress, packet->guid);
 
@@ -291,7 +294,7 @@ static char DetourRpcOnReceive(RpcOnReceiveFn original, void* rpc, SLikeNet::Pac
         (!before.empty() && memcmp(before.data(), payload.GetData(), before.size()) != 0);
 
     if (!idChanged && !payloadChanged)
-        return original(rpc, packet);
+        return origRpcOnReceive(rpc, packet);
 
     SLikeNet::BitStream out;
     WriteRpcPacket(mutableId, &payload, out);
@@ -302,45 +305,28 @@ static char DetourRpcOnReceive(RpcOnReceiveFn original, void* rpc, SLikeNet::Pac
     rebuilt.bitSize = out.GetNumberOfBitsUsed();
     rebuilt.deleteData = false;
 
-    return original(rpc, &rebuilt);
+    return origRpcOnReceive(rpc, &rebuilt);
 }
 
 static bool InstallHooks() {
     origDeallocatePacket = reinterpret_cast<DeallocateFn>(addresses.deallocatePacket);
 
-    receiveHook = std::make_unique<ReceiveHook>(addresses.receive);
-    receiveHook->set_cb([](const auto& hook, auto&... args) {
-        return DetourReceive(hook.get_trampoline(), args...);
-    });
-
-    sendBitStreamHook = std::make_unique<SendBitStreamHook>(addresses.sendBitStream);
-    sendBitStreamHook->set_cb([](const auto& hook, auto&... args) {
-        return DetourSendBitStream(hook.get_trampoline(), args...);
-    });
-
-    sendRawHook = std::make_unique<SendRawHook>(addresses.sendRaw);
-    sendRawHook->set_cb([](const auto& hook, auto&... args) {
-        return DetourSendRaw(hook.get_trampoline(), args...);
-    });
-
-    rpcOnReceiveHook = std::make_unique<RpcReceiveHook>(addresses.rpcOnReceive);
-    rpcOnReceiveHook->set_cb([](const auto& hook, auto&... args) {
-        return DetourRpcOnReceive(hook.get_trampoline(), args...);
-    });
-
-    if (!receiveHook->install() || !sendBitStreamHook->install() || !sendRawHook->install() ||
-        !rpcOnReceiveHook->install()) {
-        receiveHook.release();
-        sendBitStreamHook.release();
-        sendRawHook.release();
-        rpcOnReceiveHook.release();
+    origReceive = reinterpret_cast<ReceiveFn>(addresses.receive);
+    if (!WriteVirtualSlot(hookedPeer, kReceiveSlot, reinterpret_cast<void*>(&DetourReceive)))
         return false;
-    }
 
-    origReceive = receiveHook->get_trampoline();
-    origSendBitStream = sendBitStreamHook->get_trampoline();
-    origSendRaw = sendRawHook->get_trampoline();
-    origRpcOnReceive = rpcOnReceiveHook->get_trampoline();
+    origSendBitStream = reinterpret_cast<SendBitStreamFn>(addresses.sendBitStream);
+    if (!WriteVirtualSlot(hookedPeer, kSendBitStreamSlot, reinterpret_cast<void*>(&DetourSendBitStream)))
+        return false;
+
+    origSendRaw = reinterpret_cast<SendRawFn>(addresses.sendRaw);
+    if (!WriteVirtualSlot(hookedPeer, kSendRawSlot, reinterpret_cast<void*>(&DetourSendRaw)))
+        return false;
+
+    origRpcOnReceive = reinterpret_cast<RpcOnReceiveFn>(addresses.rpcOnReceive);
+    if (!WriteVirtualSlot(hookedRpc, kRpcOnReceiveSlot, reinterpret_cast<void*>(&DetourRpcOnReceive)))
+        return false;
+
     return true;
 }
 
@@ -399,10 +385,18 @@ bool HassleNet::Detail::EmulateRpcPacket(SLikeNet::Packet* packet) {
 }
 
 void HassleNet::Detail::RemoveHooks() {
-    rpcOnReceiveHook.release();
-    sendRawHook.release();
-    sendBitStreamHook.release();
-    receiveHook.release();
+    if (hookedPeer) {
+        if (*VirtualSlotPtr(hookedPeer, kReceiveSlot) == reinterpret_cast<void*>(&DetourReceive))
+            WriteVirtualSlot(hookedPeer, kReceiveSlot, reinterpret_cast<void*>(origReceive));
+        if (*VirtualSlotPtr(hookedPeer, kSendBitStreamSlot) == reinterpret_cast<void*>(&DetourSendBitStream))
+            WriteVirtualSlot(hookedPeer, kSendBitStreamSlot, reinterpret_cast<void*>(origSendBitStream));
+        if (*VirtualSlotPtr(hookedPeer, kSendRawSlot) == reinterpret_cast<void*>(&DetourSendRaw))
+            WriteVirtualSlot(hookedPeer, kSendRawSlot, reinterpret_cast<void*>(origSendRaw));
+    }
+    if (hookedRpc) {
+        if (*VirtualSlotPtr(hookedRpc, kRpcOnReceiveSlot) == reinterpret_cast<void*>(&DetourRpcOnReceive))
+            WriteVirtualSlot(hookedRpc, kRpcOnReceiveSlot, reinterpret_cast<void*>(origRpcOnReceive));
+    }
 
     origReceive = nullptr;
     origSendBitStream = nullptr;
@@ -438,18 +432,28 @@ InstallResult HassleNet::Detail::TryInstallHooks() {
         !TryReadQword(static_cast<unsigned char*>(instance) + kRpc4Offset, rpc) || !peer || !rpc)
         return InstallResult::NotReady;
 
-    addresses.receive = ReadVirtualSlot(module, reinterpret_cast<void*>(peer), kReceiveSlot);
-    addresses.sendBitStream =
-        ReadVirtualSlot(module, reinterpret_cast<void*>(peer), kSendBitStreamSlot);
-    addresses.sendRaw = ReadVirtualSlot(module, reinterpret_cast<void*>(peer), kSendRawSlot);
-    addresses.deallocatePacket =
-        ReadVirtualSlot(module, reinterpret_cast<void*>(peer), kDeallocateSlot);
-    addresses.rpcOnReceive =
-        ReadVirtualSlot(module, reinterpret_cast<void*>(rpc), kRpcOnReceiveSlot);
+    void* peerObj = reinterpret_cast<void*>(peer);
+    void* rpcObj = reinterpret_cast<void*>(rpc);
+
+    auto inRdata = [&](void* p) {
+        return reinterpret_cast<const unsigned char*>(p) >= module.rdataBegin &&
+               reinterpret_cast<const unsigned char*>(p) < module.rdataEnd;
+    };
+    if (!inRdata(*reinterpret_cast<void**>(peerObj)) || !inRdata(*reinterpret_cast<void**>(rpcObj)))
+        return InstallResult::NotReady;
+
+    addresses.receive = *VirtualSlotPtr(peerObj, kReceiveSlot);
+    addresses.sendBitStream = *VirtualSlotPtr(peerObj, kSendBitStreamSlot);
+    addresses.sendRaw = *VirtualSlotPtr(peerObj, kSendRawSlot);
+    addresses.deallocatePacket = *VirtualSlotPtr(peerObj, kDeallocateSlot);
+    addresses.rpcOnReceive = *VirtualSlotPtr(rpcObj, kRpcOnReceiveSlot);
 
     if (!addresses.receive || !addresses.sendBitStream || !addresses.sendRaw ||
         !addresses.deallocatePacket || !addresses.rpcOnReceive)
         return InstallResult::NotReady;
+
+    hookedPeer = reinterpret_cast<void*>(peer);
+    hookedRpc = reinterpret_cast<void*>(rpc);
 
     if (!InstallHooks())
         return InstallResult::Failed;
