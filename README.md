@@ -78,5 +78,4 @@ HassleNet is MIT-licensed, see [LICENSE](LICENSE).
 
 Ported SLikeNet/`RakNet` code remains under its original licenses
 (BSD-style, Copyright (c) 2014 Oculus VR; MIT-style modifications,
-Copyright (c) 2017–2019 SLikeSoft UG). kthook and its dependencies retain their respective
-licenses in the kthook repository.
+Copyright (c) 2017–2019 SLikeSoft UG).
